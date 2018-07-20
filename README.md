@@ -1,2 +1,2 @@
 # LabReactiveMQ
-Laboratory for a Reactuve MQ messaging infra structure
+Laboratory for a Reactive MQ messaging infra structure
