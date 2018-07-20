@@ -13,8 +13,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.zeromq.ZContext;
 import org.zeromq.ZFrame;
+import org.zeromq.ZLoop;
+import org.zeromq.ZLoop.IZLoopHandler;
 import org.zeromq.ZMQ;
 import org.zeromq.ZMsg;
+import org.zeromq.ZMQ.PollItem;
 import org.zeromq.ZMQ.Socket;
 import org.zeromq.ZThread;
 
@@ -75,6 +78,18 @@ public class MessageGenerator {
     LOGGER.debug("MessageGenerator() Agents : " + NR_SENDING_AGENTS);
   }
 
+  private class MessageReceiver implements IZLoopHandler{
+
+    @Override
+    public int handle(ZLoop loop, PollItem item, Object arg) {
+      LOGGER.debug("Handle()");
+      ZMsg reply = ZMsg.recvMsg(item.getSocket());
+      ZFrame address =  reply.pop();
+      LOGGER.debug(address.toString() + " received : " + reply);
+      return 0;
+    }
+    
+  }
   private class MessageSender implements Runnable {
 
     private ByteBuffer myDataSource;
@@ -115,6 +130,10 @@ public class MessageGenerator {
       if (client.connect(addressMQ)) {
         LOGGER.info(identity + " connected to " + addressMQ);
       }
+      
+      ZLoop looper = new ZLoop(context);
+      PollItem myReceiver = new PollItem(client, ZMQ.Poller.POLLIN);
+      looper.addPoller(myReceiver, new MessageReceiver(), null);
 
       while (!Thread.currentThread().isInterrupted()) {
         LOGGER.debug(identity + " Sending...");
@@ -127,9 +146,6 @@ public class MessageGenerator {
         if (responseMessage.send(client)) {
           LOGGER.debug(identity + " Sent!");
         }
-        ZMsg reply = ZMsg.recvMsg(client);
-        reply.pop();
-        LOGGER.debug(identity + " received : " + reply);
         
       }
       context.close();
