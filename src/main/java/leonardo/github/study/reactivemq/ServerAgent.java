@@ -66,7 +66,7 @@ public class ServerAgent implements Runnable {
       //LOGGER.debug("Received the Message " + firstMessage.toString());
       
       ZMsg responseMessage = new ZMsg();
-      ZFrame responseFrame = new ZFrame("Helllo "+identity.toString());
+      ZFrame responseFrame = new ZFrame("Hello "+identity.toString());
       responseMessage.add(responseFrame);
       responseMessage.wrap(identity);
       LOGGER.debug("Trying to answer... ");

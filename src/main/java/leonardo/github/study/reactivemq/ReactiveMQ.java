@@ -26,14 +26,13 @@ public class ReactiveMQ {
   private static final int TIMERUNNIG = 5;
   private static String ADDRESS = "ipc://testsocket.ipc";
   static Random rand = new Random(System.nanoTime());
-  private final static ZContext context = new ZContext();
-  private static ServerAgent fakeServer = new ServerAgent(ADDRESS,context);
+  private static ZContext context;
+  private static ServerAgent fakeServer;
   private final static Logger LOGGER = LoggerFactory.getLogger(ReactiveMQ.class);
 
-  public static final BlockingQueue<Runnable> actors = new ArrayBlockingQueue<Runnable>(20);
+  private static BlockingQueue<Runnable> actors;
 
-  public static final ThreadPoolExecutor GLOBAL_THREAD_POOL =
-      new ThreadPoolExecutor(12, 20, 5, TimeUnit.SECONDS, actors);
+  public static ThreadPoolExecutor GLOBAL_THREAD_POOL;
 
   static {
     System.setProperty(org.apache.logging.log4j.core.util.Constants.LOG4J_CONTEXT_SELECTOR,
@@ -42,21 +41,26 @@ public class ReactiveMQ {
 
 
   public static void main(String[] args) throws InterruptedException {
-    
+    int AGENTS_COUNT = 10;
+    actors = new ArrayBlockingQueue<Runnable>(AGENTS_COUNT + 5);
 
+    GLOBAL_THREAD_POOL = new ThreadPoolExecutor(AGENTS_COUNT + 2, AGENTS_COUNT + 10, 5, TimeUnit.SECONDS, actors);
+
+    context = new ZContext(AGENTS_COUNT + 2);
+    fakeServer = new ServerAgent(ADDRESS, context);
     GLOBAL_THREAD_POOL.execute(fakeServer);
 
-    final MessageGenerator mesgGen = new MessageGenerator(ADDRESS);
+    final MessageGenerator mesgGen = new MessageGenerator(200, 5000, AGENTS_COUNT, ADDRESS);
     mesgGen.startSendind();
 
     Thread.sleep(5000);
-    GLOBAL_THREAD_POOL.awaitTermination(1L,TimeUnit.SECONDS);
+    GLOBAL_THREAD_POOL.awaitTermination(1L, TimeUnit.SECONDS);
     GLOBAL_THREAD_POOL.shutdown();
     mesgGen.stopSending();
     context.close();
     context.destroy();
-    
-    
+
+
     long totalMessages = MessageGenerator.messagesSizes.stream().count();
     LOGGER.error(
         "Messages sent : " + totalMessages + " -- aprox " + (totalMessages / TIMERUNNIG) + "/s");

@@ -38,8 +38,8 @@ public class MessageGenerator {
 
   private static final int fileSize;
   private static int minLength = 100;
-  private static int maxLength = 5000;
-  private int NR_SENDING_AGENTS = 5;
+  private static int maxLength;
+  private static int NR_SENDING_AGENTS ;
   static Random rand = new Random(System.nanoTime());
   private final static Logger LOGGER = LoggerFactory.getLogger(MessageGenerator.class);
   private static ByteBuffer sourceData;
@@ -73,13 +73,15 @@ public class MessageGenerator {
     LOGGER.debug("MessageGenerator() File Size : " + fileSize);
     LOGGER.debug("MessageGenerator() Address : " + address);
     MessageGenerator.addressMQ = address;
+    MessageGenerator.maxLength = 5000;
+    MessageGenerator.NR_SENDING_AGENTS = 5;
   }
 
   public MessageGenerator(int minLength, int maxLength, int sendAgs, String address) {
     this(address);
     MessageGenerator.minLength = minLength;
     MessageGenerator.maxLength = maxLength;
-    NR_SENDING_AGENTS = sendAgs;
+    MessageGenerator.NR_SENDING_AGENTS = sendAgs;
     LOGGER.debug("MessageGenerator() Agents : " + NR_SENDING_AGENTS);
   }
 
@@ -138,7 +140,7 @@ public class MessageGenerator {
   }
 
   public void startSendind() {
-    for (int i = 0; i < NR_SENDING_AGENTS; i++)
+    for (int i = 0; i < MessageGenerator.NR_SENDING_AGENTS; i++)
       ReactiveMQ.GLOBAL_THREAD_POOL.submit(new MessageSender(i + 1));
   }
 
