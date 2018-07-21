@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Random;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.zeromq.ZContext;
@@ -16,10 +17,11 @@ import org.zeromq.ZFrame;
 import org.zeromq.ZLoop;
 import org.zeromq.ZLoop.IZLoopHandler;
 import org.zeromq.ZMQ;
-import org.zeromq.ZMsg;
 import org.zeromq.ZMQ.PollItem;
 import org.zeromq.ZMQ.Socket;
-import org.zeromq.ZThread;
+import org.zeromq.ZMsg;
+import reactor.core.publisher.Flux;
+import reactor.util.Loggers;
 
 /**
  * 
@@ -44,7 +46,8 @@ public class MessageGenerator {
   private static String addressMQ;
   public static ArrayList<Integer> messagesSizes = new ArrayList<>();
 
-  public static ZContext context = new ZContext();
+  private final static ZContext context = new ZContext();
+  private static boolean keepSending = true;
 
   static {
     File randomDataFile =
@@ -62,6 +65,8 @@ public class MessageGenerator {
       // TODO Auto-generated catch block
       e.printStackTrace();
     }
+
+    Loggers.useConsoleLoggers();
   }
 
   public MessageGenerator(String address) {
@@ -78,82 +83,92 @@ public class MessageGenerator {
     LOGGER.debug("MessageGenerator() Agents : " + NR_SENDING_AGENTS);
   }
 
-  private class MessageReceiver implements IZLoopHandler{
+  private class MessageReceiver implements IZLoopHandler {
 
     @Override
     public int handle(ZLoop loop, PollItem item, Object arg) {
       LOGGER.debug("Handle()");
       ZMsg reply = ZMsg.recvMsg(item.getSocket());
-      ZFrame address =  reply.pop();
+      ZFrame address = reply.pop();
       LOGGER.debug(address.toString() + " received : " + reply);
       return 0;
     }
-    
+
   }
   private class MessageSender implements Runnable {
-
-    private ByteBuffer myDataSource;
     String identity;
-    
     ZMsg responseMessage;
     ZFrame adrressing;
     ZFrame responseFrame;
-    
+    Socket client;
+    ZLoop looper;
+
     public MessageSender(int userId) {
       super();
-      this.myDataSource = sourceData.asReadOnlyBuffer();
-      this.identity = "Sender Agent "+userId;
-    }
-
-    private byte[] getRandomData(int lenght) {
-      byte[] result = new byte[lenght];
-      if (LOGGER.isDebugEnabled()) {
-        int offset = rand.nextInt(fileSize - lenght);
-        myDataSource.position(offset);
-        LOGGER.debug(" Reading " + lenght + " from position " + offset + " on size " + fileSize);
-        myDataSource.get(result);
-      } else {
-        myDataSource.position(rand.nextInt(fileSize - lenght));
-        myDataSource.get(result);
-      }
-      messagesSizes.add(result.length);
-      return result;
-    }
-    
-    @Override
-    public void run() {
-
-      Socket client = context.createSocket(ZMQ.DEALER);
+      this.identity = "Sender Agent " + userId;
+      client = context.createSocket(ZMQ.DEALER);
       client.setIdentity(identity.getBytes());
       client.setLinger(0);
-
       if (client.connect(addressMQ)) {
         LOGGER.info(identity + " connected to " + addressMQ);
       }
-      
-      ZLoop looper = new ZLoop(context);
+      looper = new ZLoop(context);
       PollItem myReceiver = new PollItem(client, ZMQ.Poller.POLLIN);
       looper.addPoller(myReceiver, new MessageReceiver(), null);
+    }
 
-      while (!Thread.currentThread().isInterrupted()) {
-        LOGGER.debug(identity + " Sending...");
-        responseMessage = new ZMsg();
-        adrressing = new ZFrame(client.getIdentity());
-        responseFrame = new ZFrame(getRandomData(MessageGenerator.minLength
-            + rand.nextInt(MessageGenerator.maxLength - MessageGenerator.minLength)));
-        responseMessage.add(responseFrame);
-        responseMessage.wrap(adrressing);
-        if (responseMessage.send(client)) {
-          LOGGER.debug(identity + " Sent!");
+    @Override
+    public void run() {
+      getRandomDataGenerator().subscribe(new Consumer<ByteBuffer>() {
+        @Override
+        public void accept(ByteBuffer t) {
+          LOGGER.debug(identity + " Sending...");
+          responseMessage = new ZMsg();
+          adrressing = new ZFrame(client.getIdentity());
+          responseFrame = new ZFrame(t.array());
+          responseMessage.add(responseFrame);
+          responseMessage.wrap(adrressing);
+          if (responseMessage.send(client)) {
+            LOGGER.debug(identity + " Sent!");
+          }
         }
-        
-      }
-      context.close();
+      });
+      looper.start();
     }
   }
-  
+
   public void startSendind() {
     for (int i = 0; i < NR_SENDING_AGENTS; i++)
-      ReactiveMQ.GLOBAL_THREAD_POOL.submit(new MessageSender(i+1));
+      ReactiveMQ.GLOBAL_THREAD_POOL.submit(new MessageSender(i + 1));
+  }
+
+  public void stopSending() {
+    context.close();
+    context.destroy();
+    keepSending = false;
+  }
+
+  Flux<ByteBuffer> getRandomDataGenerator() {
+    return Flux.<ByteBuffer>create(fluxSink -> {
+
+      final ByteBuffer myDataSource = sourceData.asReadOnlyBuffer();
+      byte[] result;
+      int offset;
+      int lenght;
+      while (keepSending) {
+        lenght = MessageGenerator.minLength
+            + rand.nextInt(MessageGenerator.maxLength - MessageGenerator.minLength);
+        offset = rand.nextInt(fileSize - lenght);
+        myDataSource.position(offset);
+        result = new byte[lenght];
+        myDataSource.position(rand.nextInt(fileSize - lenght));
+        myDataSource.get(result);
+        ByteBuffer envelope = ByteBuffer.wrap(result);
+        messagesSizes.add(lenght);
+        fluxSink.next(envelope);
+      }
+      fluxSink.complete();
+    }).publish().autoConnect();
   }
 }
+

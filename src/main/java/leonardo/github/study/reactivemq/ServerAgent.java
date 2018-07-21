@@ -21,15 +21,15 @@ import org.zeromq.ZMsg;
  *         This implementation will be based in ...
  *
  */
-public class GeneratorAgent implements Runnable {
+public class ServerAgent implements Runnable {
 
   
-  private final static Logger LOGGER = LoggerFactory.getLogger(GeneratorAgent.class);
+  private final static Logger LOGGER = LoggerFactory.getLogger(ServerAgent.class);
   private ZContext context;
   private String mqAddress;
   Socket serverSocket;
 
-  public GeneratorAgent(String mqAddress,ZContext context) {
+  public ServerAgent(String mqAddress,ZContext context) {
     super();
     this.context = context;
     this.mqAddress = mqAddress;
@@ -63,7 +63,8 @@ public class GeneratorAgent implements Runnable {
       ZFrame identity = firstMessage.pop();
       LOGGER.debug("Received the Validator ID " + identity.toString());
 
-      LOGGER.debug("Received the Message " + firstMessage.toString());
+      //LOGGER.debug("Received the Message " + firstMessage.toString());
+      
       ZMsg responseMessage = new ZMsg();
       ZFrame responseFrame = new ZFrame("Helllo "+identity.toString());
       responseMessage.add(responseFrame);

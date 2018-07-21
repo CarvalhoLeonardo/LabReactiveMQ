@@ -20,7 +20,6 @@ import org.zeromq.ZContext;
  *
  *         Based on a <a href="http://zguide.zeromq.org/java:asyncsrv">Zero MQ Example</a>
  *
- *         Using Callables to run the Actors on the Example.
  */
 
 public class ReactiveMQ {
@@ -28,7 +27,7 @@ public class ReactiveMQ {
   private static String ADDRESS = "ipc://testsocket.ipc";
   static Random rand = new Random(System.nanoTime());
   private final static ZContext context = new ZContext();
-  private static GeneratorAgent fakeServer = new GeneratorAgent(ADDRESS,context);
+  private static ServerAgent fakeServer = new ServerAgent(ADDRESS,context);
   private final static Logger LOGGER = LoggerFactory.getLogger(ReactiveMQ.class);
 
   public static final BlockingQueue<Runnable> actors = new ArrayBlockingQueue<Runnable>(20);
@@ -53,8 +52,7 @@ public class ReactiveMQ {
     Thread.sleep(5000);
     GLOBAL_THREAD_POOL.awaitTermination(1L,TimeUnit.SECONDS);
     GLOBAL_THREAD_POOL.shutdown();
-    MessageGenerator.context.close();
-    MessageGenerator.context.destroy();
+    mesgGen.stopSending();
     context.close();
     context.destroy();
     
