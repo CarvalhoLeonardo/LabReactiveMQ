@@ -9,11 +9,12 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,14 +46,13 @@ import reactor.util.concurrent.Queues;
  * 
  *
  */
-public class MessageGenerator implements Runnable {
+public class MessageSender implements Runnable {
 
   private static final int fileSize;
   private static int minLength = 100;
   private static int maxLength;
-  private static int NR_SENDING_AGENTS;
   static Random rand = new Random(System.nanoTime());
-  private final static Logger LOGGER = LoggerFactory.getLogger(MessageGenerator.class);
+  private final static Logger LOGGER = LoggerFactory.getLogger(MessageSender.class);
   private static ByteBuffer sourceData;
   private static String addressMQ;
   public static ArrayList<Integer> messagesSizes = new ArrayList<>();
@@ -60,39 +60,38 @@ public class MessageGenerator implements Runnable {
   public static AtomicInteger dropCounter = new AtomicInteger(0);
 
   private static ZContext context;
-  private static int latencyInMilisseconds = 100;
-  private static boolean keepSending = true;
+  private int numberOfMessages;
+  private int milissecondsLatency;
+  private int pFactor;
+  
+  private long endGenerating;
+  private long endSending;
+  
   ZLoop looper;
   Socket client;
   String identity = "Sender Agent";
-  ExecutorService localExecutor =
-      Executors.newCachedThreadPool(ReactiveMQ.GLOBAL_THREAD_POOL.getThreadFactory());
+  ExecutorService localExecutorService;
   PollItem myReceiver;
 
   MessageReceiver mesgReceiver;
   Flux<ByteBuffer> fluxEmitter;
 
-  private WorkQueueProcessor<ByteBuffer> senderProcessor = WorkQueueProcessor.<ByteBuffer>builder()
-      .bufferSize(Queues.SMALL_BUFFER_SIZE).executor(localExecutor).build();
-  private WorkQueueProcessor<ByteBuffer> receiverProcessor = WorkQueueProcessor
-      .<ByteBuffer>builder().bufferSize(Queues.SMALL_BUFFER_SIZE).executor(localExecutor).build();
+  private WorkQueueProcessor<ByteBuffer> senderProcessor;
+  
+  private WorkQueueProcessor<ByteBuffer> receiverProcessor;
 
   // https://www.programcreek.com/java-api-examples/?code=reactor/reactor-core/reactor-core-master/reactor-core/src/test/java/reactor/core/publisher/scenarios/BurstyWorkQueueProcessorTests.java
 
   static {
     File randomDataFile =
-        new File(MessageGenerator.class.getClassLoader().getResource("seed.bin").getFile());
+        new File(MessageSender.class.getClassLoader().getResource("seed.bin").getFile());
     fileSize = Long.valueOf(randomDataFile.length()).intValue();
     try {
       InputStream input = new BufferedInputStream(new FileInputStream(randomDataFile));
       sourceData = ByteBuffer.allocate(fileSize);
       sourceData.put(input.readAllBytes());
       input.close();
-    } catch (FileNotFoundException e) {
-      // TODO Auto-generated catch block
-      e.printStackTrace();
     } catch (IOException e) {
-      // TODO Auto-generated catch block
       e.printStackTrace();
     }
 
@@ -100,36 +99,54 @@ public class MessageGenerator implements Runnable {
     
   }
 
+  public MessageSender(String address, int messagesToSend, int latency, int parallelism) {
+    LOGGER.debug("MessageGenerator() File Size : " + fileSize);
+    LOGGER.debug("MessageGenerator() Address : " + address);
+    MessageSender.addressMQ = address;
+    MessageSender.maxLength = 5000;
+    numberOfMessages = messagesToSend;
+    milissecondsLatency = latency;
+    pFactor = parallelism;
+  }
+
+  public MessageSender(int minLength, int maxLength, String address, int messagesToSend,int latency, int parallelism) {
+    this(address ,messagesToSend, latency, parallelism);
+    MessageSender.minLength = minLength;
+    MessageSender.maxLength = maxLength;
+  }
+
   private void setUp() {
-    context = new ZContext(MessageGenerator.NR_SENDING_AGENTS + 2);
+    context = new ZContext();
     client = context.createSocket(ZMQ.DEALER);
     client.setIdentity(identity.getBytes());
     client.setLinger(0);
-    client.setBacklog(10000);
-
+    localExecutorService = Executors.newWorkStealingPool(pFactor * 2);
+    
+    senderProcessor = WorkQueueProcessor.<ByteBuffer>builder()
+        .bufferSize(Queues.SMALL_BUFFER_SIZE)
+        .executor(localExecutorService)
+        .share(true)
+        .build();
+    
+    receiverProcessor = WorkQueueProcessor.<ByteBuffer>builder()
+        .bufferSize(Queues.SMALL_BUFFER_SIZE)
+        .executor(localExecutorService)
+        .share(true)
+        .build();
+    
     if (client.connect(addressMQ)) {
       LOGGER.info(identity + " connected to " + addressMQ);
     }
-
-
   }
 
-  public MessageGenerator(String address) {
-    LOGGER.debug("MessageGenerator() File Size : " + fileSize);
-    LOGGER.debug("MessageGenerator() Address : " + address);
-    MessageGenerator.addressMQ = address;
-    MessageGenerator.maxLength = 5000;
-    MessageGenerator.NR_SENDING_AGENTS = 5;
+  public final long getEndGenerating() {
+    return endGenerating;
   }
 
-  public MessageGenerator(int minLength, int maxLength, int sendAgs, String address) {
-    this(address);
-    MessageGenerator.minLength = minLength;
-    MessageGenerator.maxLength = maxLength;
-    MessageGenerator.NR_SENDING_AGENTS = sendAgs;
-    LOGGER.debug("MessageGenerator() Agents : " + NR_SENDING_AGENTS);
+  public final long getEndSending() {
+    return endSending;
   }
-
+  
   private class MessageReceiver implements IZLoopHandler {
 
     FluxSink<ByteBuffer> externalMessageSink;
@@ -142,16 +159,10 @@ public class MessageGenerator implements Runnable {
 
     @Override
     public int handle(ZLoop loop, PollItem item, Object arg) {
-      if (Thread.currentThread().isInterrupted()) {
-        LOGGER.debug("MessageReceiver :: Interrupted");
-        this.externalMessageSink.complete();
-        stopSending();
-        return 0;
-      }
       LOGGER.debug("MessageReceiver :: Handle");
       reply = ZMsg.recvMsg(item.getSocket());
       address = reply.pop();
-      // LOGGER.debug("MessageReceiver :: received : " + reply);
+      LOGGER.debug("MessageReceiver :: received from " + address.toString());
       this.externalMessageSink.next(ByteBuffer.wrap(reply.pop().getData()));
       address.destroy();
       reply.destroy();
@@ -190,12 +201,13 @@ public class MessageGenerator implements Runnable {
   private Consumer<ByteBuffer> repliesReceiver() {
 
     return new Consumer<ByteBuffer>() {
-
       @Override
       public void accept(ByteBuffer item) {
-        LOGGER.debug(MessageGenerator.answerCounter.incrementAndGet() + " receiveMessage :: "
-            + item.toString());
-
+        LOGGER.debug("END -  receiveMessage : "+MessageSender.answerCounter.incrementAndGet());
+        if (MessageSender.answerCounter.get() == numberOfMessages) {
+          LOGGER.debug("THE END");
+          stop();
+        }
       }
     };
   }
@@ -207,17 +219,19 @@ public class MessageGenerator implements Runnable {
     myReceiver = new PollItem(client, ZMQ.Poller.POLLIN);
     looper = new ZLoop(context);
 
+    final AtomicLong counter = new AtomicLong(0);
 
-    // for (int i = 0; i < MessageGenerator.NR_SENDING_AGENTS; i++)
     fluxEmitter = Flux.<ByteBuffer>create(emitter -> {
       final ByteBuffer myDataSource = sourceData.asReadOnlyBuffer();
       byte[] result;
       int offset;
       int lenght;
       
-      while (! emitter.isCancelled() && keepSending) {
-        lenght = MessageGenerator.minLength
-            + rand.nextInt(MessageGenerator.maxLength - MessageGenerator.minLength);
+      while (counter.get() < numberOfMessages) {
+        counter.incrementAndGet();
+        LOGGER.debug("messageProducer counter : "+counter.get());
+        lenght = MessageSender.minLength
+            + rand.nextInt(MessageSender.maxLength - MessageSender.minLength);
         offset = rand.nextInt(fileSize - lenght);
         myDataSource.position(offset);
         result = new byte[lenght];
@@ -226,27 +240,26 @@ public class MessageGenerator implements Runnable {
         ByteBuffer envelope = ByteBuffer.wrap(result);
         emitter.next(envelope);
       }
-      LOGGER.debug("messageProducer :: interrupted");
+      endGenerating = Calendar.getInstance().getTimeInMillis();
       emitter.complete();
+      LOGGER.debug("emitter.complete()");
 
     });
 
     fluxEmitter
-       .sample(Duration.ofMillis(latencyInMilisseconds))
-        // .log()
-        // .delayElements(Duration.ofMillis(latencyInMilisseconds))  
+      .delayElements(Duration.ofMillis(milissecondsLatency))
       .subscribeOn(Schedulers.parallel())
       .subscribeWith(senderProcessor);
     
-    ParallelFlux<ByteBuffer> parallelSender =  senderProcessor
-        .share()
-        .parallel(ReactiveMQ.AGENTS_COUNT)
-        .runOn(Schedulers.parallel());
       
-      for (int i = 0; i < ReactiveMQ.AGENTS_COUNT; i++) {
-        parallelSender.subscribe(getMessageSenderAgent(i + 1));
-      }
-        
+    for (int i=1; i<= pFactor; i++) {
+      senderProcessor.subscribe(getMessageSenderAgent(i));  
+    }
+    
+    senderProcessor.doOnComplete(() ->{
+      LOGGER.debug("sender.complete()");
+      endSending = Calendar.getInstance().getTimeInMillis();
+    });
 
     Flux<ByteBuffer> fluxReceiver = Flux.<ByteBuffer>create(receiver -> {
       mesgReceiver = new MessageReceiver(receiver);
@@ -255,65 +268,41 @@ public class MessageGenerator implements Runnable {
     
     fluxReceiver
       .share()
-      .subscribeOn(Schedulers.parallel())
       .subscribeWith(receiverProcessor);
 
     ParallelFlux<ByteBuffer> parallelReceiver = receiverProcessor
-        .share()
-        .parallel(ReactiveMQ.AGENTS_COUNT)
+        .parallel(pFactor)
         .runOn(Schedulers.parallel());
 
     
-    for (int i = 0; i < ReactiveMQ.AGENTS_COUNT; i++) {
-      parallelReceiver
+   parallelReceiver
         .subscribe(repliesReceiver());
-    }
     
-    
-    
-
     looper.start();
 
   }
 
-  public void stopSending() {
-
-    LOGGER.debug("Keepsending :: false");
-    keepSending = false;
-
-    LOGGER.error("Sender processor :: on queue : " + senderProcessor.getPending());
-    LOGGER.debug("Sender processor :: destroy");
-    senderProcessor.dispose();
-    senderProcessor.forceShutdown();
-
-
-    LOGGER.error("Receiver processor :: on queue : " + receiverProcessor.getPending());
-    LOGGER.error("Receiver processor :: on flux : "
-        + mesgReceiver.externalMessageSink.requestedFromDownstream());
-    LOGGER.debug("Receiver processor :: destroy");
-    mesgReceiver.externalMessageSink.complete();
-    receiverProcessor.dispose();
-    receiverProcessor.forceShutdown();
-
-    localExecutor.shutdown();
-    try {
-      localExecutor.awaitTermination(1L, TimeUnit.SECONDS);
-    } catch (InterruptedException e) {
-    }
-
-    LOGGER.debug("Loop :: destroy");
+  public void stop() {
+    
+    LOGGER.debug("senderProcessor.awaitAndShutdown()");
+    senderProcessor.awaitAndShutdown();
+    LOGGER.debug("senderProcessor -- Shutdown");
+    
+    LOGGER.debug("receiverProcessor.awaitAndShutdown()");
+    receiverProcessor.awaitAndShutdown();
+    LOGGER.debug("receiverProcessor -- Shutdown");
+    
+    LOGGER.debug("Loop :: removePoller");
     looper.removePoller(myReceiver);
-    myReceiver.getSocket().close();
-    looper.destroy();
 
-    LOGGER.debug("Socket :: disconnect/close");
-    context.destroySocket(client);
-    client.close();
-
-
-
+    LOGGER.debug("Context :: closeSockets");
+    context.getSockets().forEach( es ->{
+      LOGGER.debug("Closing "+new String(es.getIdentity()));
+      es.close();
+      context.destroySocket(es);
+    });
+    
     LOGGER.debug("Context :: destroy");
-    context.close();
     context.destroy();
 
   }
