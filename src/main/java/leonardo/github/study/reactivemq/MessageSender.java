@@ -58,6 +58,7 @@ public class MessageSender implements Runnable {
   public static ArrayList<Integer> messagesSizes = new ArrayList<>();
   public static AtomicInteger answerCounter = new AtomicInteger(0);
   public static AtomicInteger dropCounter = new AtomicInteger(0);
+  public static AtomicInteger sentCounter = new AtomicInteger(0);
 
   private static ZContext context;
   private int numberOfMessages;
@@ -194,6 +195,10 @@ public class MessageSender implements Runnable {
         }
         responseMessage.clear();
         responseMessage.destroy();
+        if (sentCounter.get() == numberOfMessages){
+          LOGGER.debug("sender.complete()");
+          endSending = Calendar.getInstance().getTimeInMillis();
+        }
       }
     };
   }
@@ -219,17 +224,15 @@ public class MessageSender implements Runnable {
     myReceiver = new PollItem(client, ZMQ.Poller.POLLIN);
     looper = new ZLoop(context);
 
-    final AtomicLong counter = new AtomicLong(0);
-
     fluxEmitter = Flux.<ByteBuffer>create(emitter -> {
       final ByteBuffer myDataSource = sourceData.asReadOnlyBuffer();
       byte[] result;
       int offset;
       int lenght;
       
-      while (counter.get() < numberOfMessages) {
-        counter.incrementAndGet();
-        LOGGER.debug("messageProducer counter : "+counter.get());
+      while (sentCounter.get() < numberOfMessages) {
+        sentCounter.incrementAndGet();
+        LOGGER.debug("messageProducer counter : "+sentCounter.get());
         lenght = MessageSender.minLength
             + rand.nextInt(MessageSender.maxLength - MessageSender.minLength);
         offset = rand.nextInt(fileSize - lenght);
@@ -255,11 +258,6 @@ public class MessageSender implements Runnable {
     for (int i=1; i<= pFactor; i++) {
       senderProcessor.subscribe(getMessageSenderAgent(i));  
     }
-    
-    senderProcessor.doOnComplete(() ->{
-      LOGGER.debug("sender.complete()");
-      endSending = Calendar.getInstance().getTimeInMillis();
-    });
 
     Flux<ByteBuffer> fluxReceiver = Flux.<ByteBuffer>create(receiver -> {
       mesgReceiver = new MessageReceiver(receiver);
@@ -294,13 +292,17 @@ public class MessageSender implements Runnable {
     
     LOGGER.debug("Loop :: removePoller");
     looper.removePoller(myReceiver);
-
+    
+    LOGGER.debug("Looper :: destroy");
+    looper.destroy();
+    
     LOGGER.debug("Context :: closeSockets");
     context.getSockets().forEach( es ->{
       LOGGER.debug("Closing "+new String(es.getIdentity()));
       es.close();
       context.destroySocket(es);
     });
+    
     
     LOGGER.debug("Context :: destroy");
     context.destroy();

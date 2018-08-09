@@ -4,15 +4,12 @@ import java.text.DecimalFormat;
 import java.util.Calendar;
 import java.util.Random;
 import java.util.UUID;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.zeromq.ZContext;
 
 /**
  * 
@@ -28,8 +25,7 @@ import org.zeromq.ZContext;
 public class ReactiveMQ {
   private static String FRONTADDRESS = "ipc://" + UUID.randomUUID().toString();
   static Random rand = new Random(System.nanoTime());
-  private static ZContext context;
-  private static MessageEchoer fakeServer;
+  private static MessageEchoer echoServer;
   private final static Logger LOGGER = LoggerFactory.getLogger(ReactiveMQ.class);
 
 
@@ -41,7 +37,7 @@ public class ReactiveMQ {
   }
 
 
-  public static void main(String[] args) throws InterruptedException {
+  public static void main(String[] args) throws InterruptedException, ExecutionException {
     int parallelFactor;
     int messageCount;
     int messageLatency;
@@ -59,11 +55,8 @@ public class ReactiveMQ {
       messageLatency = Integer.parseInt(args[2]);
       
     }
-    context = new ZContext();
-    fakeServer = new MessageEchoer(FRONTADDRESS, context, parallelFactor);
-    executor.execute(() ->{
-      fakeServer.run(); 
-    });
+    echoServer = new MessageEchoer(FRONTADDRESS, parallelFactor);
+    executor.submit(echoServer);
 
     MessageSender mesgGen = new MessageSender(200, 5000, FRONTADDRESS, messageCount, messageLatency, parallelFactor);
 
@@ -71,23 +64,21 @@ public class ReactiveMQ {
     mesgGen.run();
     long endTime = Calendar.getInstance().getTimeInMillis();
 
-    long totalRunTime = (endTime-startTime)/1000;
-    long creationRunTime = (mesgGen.getEndGenerating() - startTime);
-    long sendRunTime = (mesgGen.getEndSending() - startTime)/1000;
+    Double totalRunTime = Double.valueOf(endTime-startTime)/1000;
+    Double creationRunTime = Double.valueOf((mesgGen.getEndGenerating() - startTime));
+    Double sendRunTime = Double.valueOf((mesgGen.getEndSending() - startTime)/1000);
     
-    LOGGER.debug("fakeServer.shutdownNow()");
-    fakeServer.testEndOfOperation(true);
-    
-    LOGGER.debug("executor.shutdownNow()");
-    executor.shutdown();
-    
-    DecimalFormat decimalFormat = new DecimalFormat("#,##0.00000");
+    LOGGER.debug("totalRunTime : " + totalRunTime);
+    LOGGER.debug("creationRunTime : " + creationRunTime);
+    LOGGER.debug("sendRunTime : " + sendRunTime);
+ 
+    DecimalFormat decimalFormat = new DecimalFormat("###.###");
     String logMesgFormat = "Messages %s : %d -- aprox %s /s";
 
-    long totalMessages = MessageSender.messagesSizes.stream().count();
-    LOGGER.error(String.format(logMesgFormat, "generated", totalMessages, decimalFormat.format(totalMessages / creationRunTime)));
-    LOGGER.error(String.format(logMesgFormat, "sent", totalMessages, decimalFormat.format(totalMessages / sendRunTime)));
-    LOGGER.error(String.format(logMesgFormat, "echoed", fakeServer.getEchoCounter(), decimalFormat.format(fakeServer.getEchoCounter() / totalRunTime)));
+    long effectiveSentMessages = MessageSender.messagesSizes.stream().count();
+    LOGGER.error(String.format(logMesgFormat, "generated", effectiveSentMessages, decimalFormat.format(effectiveSentMessages / creationRunTime * 1000)));
+    LOGGER.error(String.format(logMesgFormat, "sent", effectiveSentMessages, decimalFormat.format(effectiveSentMessages / sendRunTime)));
+    LOGGER.error(String.format(logMesgFormat, "echoed", echoServer.getEchoCounter(), decimalFormat.format(echoServer.getEchoCounter() / totalRunTime)));
     
     LOGGER
         .error("Minor size : " + MessageSender.messagesSizes.stream().min(Integer::compare).get());
@@ -98,5 +89,12 @@ public class ReactiveMQ {
     LOGGER.error(
         "Biggest size : " + MessageSender.messagesSizes.stream().max(Integer::compare).get());
 
+    
+    LOGGER.debug("executor.shutdownNow()");
+    executor.awaitTermination(1, TimeUnit.SECONDS);
+   
+    LOGGER.debug("fakeServer.shutdownNow()");
+    echoServer.testEndOfOperation(true);
+    
   }
 }
