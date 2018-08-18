@@ -11,6 +11,7 @@
 	<properties>
 		<apachelog-version>2.11.0</apachelog-version>
 		<reactor-version>3.1.8.RELEASE</reactor-version>
+		<loglevel>debug</loglevel>
 	</properties>
 
 	<build>

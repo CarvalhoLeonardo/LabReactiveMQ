@@ -57,8 +57,8 @@ public class ReactiveMQ {
     // Tip from https://github.com/zeromq/jeromq/wiki/Sharing-ZContext-between-thread
     
     echoServer = new MessageEchoer(FRONTADDRESS, parallelFactor, shadowContextReceiver);
-    Thread malditaT = new Thread(echoServer);
-    malditaT.start();
+    Thread echoT = new Thread(echoServer);
+    echoT.start();
     MessageSender mesgGen = new MessageSender(200, 5000, FRONTADDRESS, messageCount, messageLatency, parallelFactor, shadowContextSender);
 
     long startTime = Calendar.getInstance().getTimeInMillis();
