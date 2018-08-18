@@ -50,6 +50,7 @@ public class MessageEchoer implements Runnable {
   ZLoop looper;
   ExecutorService localExecutor;
   private WorkQueueProcessor<ZMsg> echoProcessor;
+  ParallelFlux<ZMsg> parallelEchoer;
   private int pFactor;
   private List<Disposable> workers = new ArrayList<>();
   private List<Socket> workersSockets = new ArrayList<>();
@@ -58,13 +59,13 @@ public class MessageEchoer implements Runnable {
   private static String BACKADDRESS = "ipc://"+UUID.randomUUID().toString();
 
 
-  public MessageEchoer(String mqAddress, int parallelFactor) {
+  public MessageEchoer(String mqAddress, int parallelFactor, ZContext shadowCtx) {
     super();
-    this.context = new ZContext();
+    this.context = shadowCtx;
     this.mqAddress = mqAddress;
     this.pFactor = parallelFactor;
 
-    localExecutor = Executors.newWorkStealingPool(parallelFactor * 2 + 1);
+    localExecutor = Executors.newWorkStealingPool(parallelFactor + 2);
 
     echoProcessor = WorkQueueProcessor.<ZMsg>builder()
         .bufferSize(Queues.SMALL_BUFFER_SIZE)
@@ -99,8 +100,7 @@ public class MessageEchoer implements Runnable {
     looper = new ZLoop(context);
 
     
-   ParallelFlux<ZMsg> parallelEchoer =  echoProcessor
-      .share()
+   parallelEchoer =  echoProcessor
       .parallel(pFactor)
       .runOn(Schedulers.parallel());
    
@@ -127,20 +127,20 @@ public class MessageEchoer implements Runnable {
    });
    
    parallelEchoer.subscribe(echoProcessor);
+   workers.add(echoProcessor);
    
 
    localExecutor.submit(() ->{
      LOGGER.debug("Starting to proxy... ");
      ZMQ.proxy(serverSocket, backendSocket, null);
+     LOGGER.debug("Proxy ended");
    });
 
    localExecutor.submit(() ->{
-     LOGGER.debug("Starting to pool... ");
-     looper.start();     
+     LOGGER.debug("Starting to poll... ");
+     looper.start();
+     LOGGER.debug("Polling ended.");
   });
-   
-   
-   
    
    try {
     Thread.currentThread().join();
@@ -160,10 +160,6 @@ public class MessageEchoer implements Runnable {
 
     @Override
     public int handle(ZLoop loop, PollItem item, Object arg) {
-      if (testEndOfOperation(false)) {
-        emitter.complete();
-        return -1;
-      }
       LOGGER.debug("InternalHandler -- HANDLE");
       ZMsg incoming = ZMsg.recvMsg(item.getSocket());
       LOGGER.debug("InternalHandler -- RECEIVED "+incoming.peekFirst().toString());
@@ -184,11 +180,6 @@ public class MessageEchoer implements Runnable {
 
       @Override
       public void accept(ZMsg mesg) {
-        if (testEndOfOperation(false)) {
-          LOGGER.debug(myName +" :: Shutting Down.");
-          mesg.destroy();
-          return;
-        }
         LOGGER.debug(myName +" -- HANDLE :: " + echoCounter.get());
         if (LOGGER.isTraceEnabled())
           mesg.dump(System.out);
@@ -196,10 +187,10 @@ public class MessageEchoer implements Runnable {
         identity = mesg.getFirst().duplicate();
         
         if (identity == null) {
-          LOGGER.error("Received null Validator ID ...");
+          LOGGER.error("Received null Socket ID ...");
           return;
         }
-        LOGGER.debug("Received the Validator ID " + identity.toString());
+        LOGGER.debug("Received the Socket ID " + identity.toString());
 
         mesg.getLast().reset("Hello " + identity.toString());
         LOGGER.debug(echoCounter.incrementAndGet() + " -- Trying to echo... ");
@@ -215,8 +206,7 @@ public class MessageEchoer implements Runnable {
 
   }
   
-  public boolean testEndOfOperation(boolean shutDownNow) {
-    if (Thread.currentThread().isInterrupted() || shutDownNow) {
+  public void endOfOperation() {
       LOGGER.info(" Time to go - shutting down at counter "+echoCounter.get());
       
       LOGGER.info("localExecutor.shutdownNow()");
@@ -231,33 +221,20 @@ public class MessageEchoer implements Runnable {
       LOGGER.debug("echoProcessor.awaitAndShutdown()");
       echoProcessor.awaitAndShutdown();
       LOGGER.debug("echoProcessor -- Shutdown");
-      
-      workers.forEach(d ->{
-        d.dispose();
-      });
 
-      pollers.forEach( p ->{
-        LOGGER.debug("Removing poller on "+new String(p.getSocket().getIdentity()));
-        looper.removePoller(p);
-      });
-      
-      LOGGER.debug("Closing sockets...");
+      LOGGER.debug("Unbinding sockets...");
       serverSocket.unbind(mqAddress);
       backendSocket.unbind(BACKADDRESS);
       
+      LOGGER.debug("Destroying sockets...");
       context.destroySocket(backendSocket);
       context.destroySocket(serverSocket);
-      
-      workersSockets.forEach( es ->{
-        context.destroySocket(es);
-      });
       LOGGER.debug("Sockets closed.");
       
-      context.close();
-      return true;
-    }
-    
-    return false;
+      LOGGER.debug("Context destroy().");
+      context.destroy();
+      LOGGER.debug("Context destroyed.");
+      
   }
 
 }

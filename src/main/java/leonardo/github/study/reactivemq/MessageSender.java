@@ -3,7 +3,6 @@ package leonardo.github.study.reactivemq;
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -14,7 +13,6 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,7 +76,6 @@ public class MessageSender implements Runnable {
   Flux<ByteBuffer> fluxEmitter;
 
   private WorkQueueProcessor<ByteBuffer> senderProcessor;
-  
   private WorkQueueProcessor<ByteBuffer> receiverProcessor;
 
   // https://www.programcreek.com/java-api-examples/?code=reactor/reactor-core/reactor-core-master/reactor-core/src/test/java/reactor/core/publisher/scenarios/BurstyWorkQueueProcessorTests.java
@@ -100,7 +97,7 @@ public class MessageSender implements Runnable {
     
   }
 
-  public MessageSender(String address, int messagesToSend, int latency, int parallelism) {
+  public MessageSender(String address, int messagesToSend, int latency, int parallelism, ZContext ctx) {
     LOGGER.debug("MessageGenerator() File Size : " + fileSize);
     LOGGER.debug("MessageGenerator() Address : " + address);
     MessageSender.addressMQ = address;
@@ -108,16 +105,17 @@ public class MessageSender implements Runnable {
     numberOfMessages = messagesToSend;
     milissecondsLatency = latency;
     pFactor = parallelism;
+    context = ctx;
   }
 
-  public MessageSender(int minLength, int maxLength, String address, int messagesToSend,int latency, int parallelism) {
-    this(address ,messagesToSend, latency, parallelism);
+  public MessageSender(int minLength, int maxLength, String address, int messagesToSend,int latency, int parallelism, ZContext ctx) {
+    this(address ,messagesToSend, latency, parallelism,ctx);
     MessageSender.minLength = minLength;
     MessageSender.maxLength = maxLength;
   }
 
   private void setUp() {
-    context = new ZContext();
+    
     client = context.createSocket(ZMQ.DEALER);
     client.setIdentity(identity.getBytes());
     client.setLinger(0);
@@ -255,9 +253,9 @@ public class MessageSender implements Runnable {
       .subscribeWith(senderProcessor);
     
       
-    for (int i=1; i<= pFactor; i++) {
-      senderProcessor.subscribe(getMessageSenderAgent(i));  
-    }
+    
+   senderProcessor.subscribeOn(Schedulers.parallel()).subscribe(getMessageSenderAgent(1));  
+    
 
     Flux<ByteBuffer> fluxReceiver = Flux.<ByteBuffer>create(receiver -> {
       mesgReceiver = new MessageReceiver(receiver);
@@ -276,8 +274,9 @@ public class MessageSender implements Runnable {
    parallelReceiver
         .subscribe(repliesReceiver());
     
+    LOGGER.debug("Starting to poll...");
     looper.start();
-
+    LOGGER.debug("Polling stopped.");
   }
 
   public void stop() {
@@ -296,17 +295,10 @@ public class MessageSender implements Runnable {
     LOGGER.debug("Looper :: destroy");
     looper.destroy();
     
-    LOGGER.debug("Context :: closeSockets");
-    context.getSockets().forEach( es ->{
-      LOGGER.debug("Closing "+new String(es.getIdentity()));
-      es.close();
-      context.destroySocket(es);
-    });
-    
-    
     LOGGER.debug("Context :: destroy");
     context.destroy();
-
+    LOGGER.debug("Context :: destroyed");
+    
   }
 
 
