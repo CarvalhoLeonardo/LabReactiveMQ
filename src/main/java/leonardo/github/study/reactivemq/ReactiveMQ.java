@@ -1,12 +1,10 @@
 package leonardo.github.study.reactivemq;
 
+import java.text.DecimalFormat;
+import java.util.Calendar;
 import java.util.Random;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.zeromq.ZContext;
@@ -20,21 +18,13 @@ import org.zeromq.ZContext;
  *
  *         Based on a <a href="http://zguide.zeromq.org/java:asyncsrv">Zero MQ Example</a>
  *
- *         Using Callables to run the Actors on the Example.
  */
 
 public class ReactiveMQ {
-  private static final int TIMERUNNIG = 5;
-  private static String ADDRESS = "ipc://testsocket.ipc";
+  private static String FRONTADDRESS = "ipc://" + UUID.randomUUID().toString();
   static Random rand = new Random(System.nanoTime());
-  private final static ZContext context = new ZContext();
-  private static GeneratorAgent fakeServer = new GeneratorAgent(ADDRESS,context);
+  private static MessageEchoer echoServer;
   private final static Logger LOGGER = LoggerFactory.getLogger(ReactiveMQ.class);
-
-  public static final BlockingQueue<Runnable> actors = new ArrayBlockingQueue<Runnable>(20);
-
-  public static final ThreadPoolExecutor GLOBAL_THREAD_POOL =
-      new ThreadPoolExecutor(12, 20, 5, TimeUnit.SECONDS, actors);
 
   static {
     System.setProperty(org.apache.logging.log4j.core.util.Constants.LOG4J_CONTEXT_SELECTOR,
@@ -42,32 +32,72 @@ public class ReactiveMQ {
   }
 
 
-  public static void main(String[] args) throws InterruptedException {
+  public static void main(String[] args) throws InterruptedException, ExecutionException {
+    int parallelFactor;
+    int messageCount;
+    int messageLatency;
+    if (args.length < 1) {
+      parallelFactor = 4;
+      messageCount = 100;
+      messageLatency = 100;
+    } else {
+      
+      if (args.length != 3) {
+        throw new IllegalArgumentException("I need 0 or 3 parametes : <parallelism> <how many messages> <messages latency>");
+      }
+      parallelFactor =  Integer.parseInt(args[0]);
+      messageCount = Integer.parseInt(args[1]);
+      messageLatency = Integer.parseInt(args[2]);
+      
+    }
     
+    ZContext mainContext = new ZContext(parallelFactor/2);
+    ZContext shadowContextSender = ZContext.shadow(mainContext);
+    ZContext shadowContextReceiver = ZContext.shadow(mainContext);
+    // Tip from https://github.com/zeromq/jeromq/wiki/Sharing-ZContext-between-thread
+    
+    echoServer = new MessageEchoer(FRONTADDRESS, parallelFactor, shadowContextReceiver);
+    Thread malditaT = new Thread(echoServer);
+    malditaT.start();
+    MessageSender mesgGen = new MessageSender(200, 5000, FRONTADDRESS, messageCount, messageLatency, parallelFactor, shadowContextSender);
 
-    GLOBAL_THREAD_POOL.execute(fakeServer);
-
-    final MessageGenerator mesgGen = new MessageGenerator(ADDRESS);
-    mesgGen.startSendind();
-
-    Thread.sleep(5000);
-    GLOBAL_THREAD_POOL.awaitTermination(1L,TimeUnit.SECONDS);
-    GLOBAL_THREAD_POOL.shutdown();
-    MessageGenerator.context.close();
-    MessageGenerator.context.destroy();
-    context.close();
-    context.destroy();
+    long startTime = Calendar.getInstance().getTimeInMillis();
+    mesgGen.run();
+    long endTime = Calendar.getInstance().getTimeInMillis();
     
     
-    long totalMessages = MessageGenerator.messagesSizes.stream().count();
-    LOGGER.error(
-        "Messages sent : " + totalMessages + " -- aprox " + (totalMessages / TIMERUNNIG) + "/s");
-    LOGGER.error(
-        "Minor size : " + MessageGenerator.messagesSizes.stream().min(Integer::compare).get());
-    LOGGER.error("Mean size : " + MessageGenerator.messagesSizes.stream().mapToDouble(i -> {
+    Double totalRunTime = Double.valueOf(endTime-startTime)/1000;
+    Double creationRunTime = Double.valueOf((mesgGen.getEndGenerating() - startTime));
+    Double sendRunTime = Double.valueOf((mesgGen.getEndSending() - startTime)/1000);
+    
+    LOGGER.debug("totalRunTime : " + totalRunTime);
+    LOGGER.debug("creationRunTime : " + creationRunTime);
+    LOGGER.debug("sendRunTime : " + sendRunTime);
+ 
+    DecimalFormat decimalFormat = new DecimalFormat("###.###");
+    String logMesgFormat = "Messages %s : %d -- aprox %s /s";
+
+    long effectiveSentMessages = MessageSender.messagesSizes.stream().count();
+    LOGGER.error(String.format(logMesgFormat, "generated", effectiveSentMessages, decimalFormat.format(effectiveSentMessages / creationRunTime * 1000)));
+    LOGGER.error(String.format(logMesgFormat, "sent", effectiveSentMessages, decimalFormat.format(effectiveSentMessages / sendRunTime)));
+    LOGGER.error(String.format(logMesgFormat, "echoed", echoServer.getEchoCounter(), decimalFormat.format(echoServer.getEchoCounter() / totalRunTime)));
+    
+    LOGGER
+        .error("Minor size : " + MessageSender.messagesSizes.stream().min(Integer::compare).get());
+    LOGGER.error("Mean size : " + MessageSender.messagesSizes.stream().mapToDouble(i -> {
       return Integer.valueOf(i).doubleValue();
     }).average().getAsDouble());
+
     LOGGER.error(
-        "Biggest size : " + MessageGenerator.messagesSizes.stream().max(Integer::compare).get());
+        "Biggest size : " + MessageSender.messagesSizes.stream().max(Integer::compare).get());
+
+    echoServer.endOfOperation();    
+    
+    LOGGER.debug("Context :: destroy");
+    mainContext.destroy();
+    LOGGER.debug("Context :: destroyed");
+    
+    System.exit(0);
+    
   }
 }
